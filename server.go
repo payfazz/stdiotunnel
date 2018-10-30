@@ -66,9 +66,6 @@ mainloop:
 		go func() {
 			defer left.Close()
 
-			allCh := make(chan struct{})
-			defer close(allCh)
-
 			rightReq := &http.Request{
 				Method: "POST",
 				URL: &url.URL{
@@ -84,19 +81,17 @@ mainloop:
 			}
 			defer rightResp.Body.Close()
 
-			rightToLeftCh := make(chan struct{})
-			go func() {
-				defer close(rightToLeftCh)
-				if err := copyAll(copyAllParam{
-					terminateCh: allCh,
-					reader:      rightResp.Body,
-					writer:      left,
-				}); err != nil {
+			if err := copyAll(copyAllParam{
+				terminateCh: allCh,
+				reader:      rightResp.Body,
+				writer:      left,
+			}); err != nil {
+				select {
+				case <-allCh:
+				default:
 					logger.Println(err)
 				}
-			}()
-
-			<-rightToLeftCh
+			}
 		}()
 	}
 }
