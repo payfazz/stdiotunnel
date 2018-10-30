@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/payfazz/ioconn"
 	"golang.org/x/net/http2"
@@ -14,7 +15,6 @@ import (
 
 func runServer(addr string) {
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)
-	logger.Println("Starting server")
 
 	netaddr := strings.SplitN(addr, ":", 2)
 	if len(netaddr) != 2 {
@@ -26,13 +26,22 @@ func runServer(addr string) {
 		logger.Fatalln(err)
 		return
 	}
-	defer leftListener.Close()
-	logger.Printf("listening on %v\n", leftListener.Addr())
 
+	logger.Printf("Server listening on %v\n", leftListener.Addr())
+
+	allCh := make(chan struct{})
 	rightMuxed := ioconn.New(ioconn.Config{
-		Reader: os.Stdin,
+		Reader: eofnotifier{
+			backend: os.Stdin,
+			ch:      allCh,
+		},
 		Writer: os.Stdout,
 	})
+
+	go func() {
+		<-allCh
+		leftListener.Close()
+	}()
 
 	rightMuxedConn, err := (&http2.Transport{}).NewClientConn(rightMuxed)
 	if err != nil {
@@ -40,11 +49,18 @@ func runServer(addr string) {
 		return
 	}
 
+mainloop:
 	for {
 		left, err := leftListener.Accept()
 		if err != nil {
-			logger.Println(err)
-			continue
+			select {
+			case <-allCh:
+				break mainloop
+			default:
+				logger.Println(err)
+				time.Sleep(1 * time.Second)
+				continue mainloop
+			}
 		}
 
 		go func() {
@@ -70,9 +86,9 @@ func runServer(addr string) {
 
 			rightToLeftCh := make(chan struct{})
 			go func() {
+				defer close(rightToLeftCh)
 				if err := copyAll(copyAllParam{
 					terminateCh: allCh,
-					doneCh:      rightToLeftCh,
 					reader:      rightResp.Body,
 					writer:      left,
 				}); err != nil {

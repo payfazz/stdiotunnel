@@ -29,9 +29,6 @@ func runClient(addr string) {
 		BaseConfig: &http.Server{
 			ErrorLog: logger,
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				allCh := make(chan struct{})
-				defer close(allCh)
-
 				leftWriter := w
 				leftReader := r.Body
 
@@ -42,27 +39,38 @@ func runClient(addr string) {
 				}
 				defer right.Close()
 
+				allCh := make(chan struct{})
+				defer close(allCh)
+
 				leftToRightCh := make(chan struct{})
 				go func() {
+					defer close(leftToRightCh)
 					if err := copyAll(copyAllParam{
 						terminateCh: allCh,
-						doneCh:      leftToRightCh,
 						reader:      leftReader,
 						writer:      right,
 					}); err != nil {
-						logger.Println(err)
+						select {
+						case <-allCh:
+						default:
+							logger.Println(err)
+						}
 					}
 				}()
 
 				rightToLeftCh := make(chan struct{})
 				go func() {
+					defer close(rightToLeftCh)
 					if err := copyAll(copyAllParam{
 						terminateCh: allCh,
-						doneCh:      rightToLeftCh,
 						reader:      right,
 						writer:      leftWriter,
 					}); err != nil {
-						logger.Println(err)
+						select {
+						case <-allCh:
+						default:
+							logger.Println(err)
+						}
 					}
 				}()
 

@@ -6,14 +6,12 @@ import (
 )
 
 type copyAllParam struct {
-	doneCh      chan struct{}
 	terminateCh chan struct{}
 	reader      io.Reader
 	writer      io.Writer
 }
 
 func copyAll(p copyAllParam) error {
-	defer close(p.doneCh)
 	w := p.writer
 	r := p.reader
 	f, fOk := w.(http.Flusher)
@@ -30,33 +28,35 @@ func copyAll(p copyAllParam) error {
 					f.Flush()
 				}
 				if ew != nil {
-					select {
-					case <-p.terminateCh:
-						return nil
-					default:
-						return ew
-					}
+					return ew
 				}
 				if nr != nw {
-					select {
-					case <-p.terminateCh:
-						return nil
-					default:
-						return io.ErrShortWrite
-					}
+					return io.ErrShortWrite
 				}
 			}
 			if er != nil {
 				if er == io.EOF {
 					return nil
 				}
-				select {
-				case <-p.terminateCh:
-					return nil
-				default:
-					return er
-				}
+				return er
 			}
 		}
 	}
+}
+
+type eofnotifier struct {
+	backend io.Reader
+	ch      chan struct{}
+}
+
+func (en eofnotifier) Read(data []byte) (int, error) {
+	n, err := en.backend.Read(data)
+	if err == io.EOF {
+		select {
+		case <-en.ch:
+		default:
+			close(en.ch)
+		}
+	}
+	return n, err
 }
