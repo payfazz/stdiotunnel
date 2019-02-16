@@ -4,6 +4,8 @@ Tunneling via `stdin` and `stdout`.
 
 This project is useful for forwarding temporary port via `docker exec`.
 
+Why not socat?, because socat cannot multiplex multiple connection with single stdio stream
+
 ## example
 
 create fifo by
