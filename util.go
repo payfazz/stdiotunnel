@@ -3,59 +3,59 @@ package main
 import (
 	"io"
 	"net/http"
+
+	"github.com/payfazz/go-errors"
 )
 
-type copyAllParam struct {
-	terminateCh chan struct{}
-	reader      io.Reader
-	writer      io.Writer
-}
-
-func copyAll(p copyAllParam) error {
-	w := p.writer
-	r := p.reader
-	f, fOk := w.(http.Flusher)
+func copyAll(r io.Reader, w io.Writer) error {
+	f, flushable := w.(http.Flusher)
 	buf := [1 << 20]byte{}
 	for {
-		select {
-		case <-p.terminateCh:
-			return nil
-		default:
-			nr, er := r.Read(buf[:])
-			if nr > 0 {
-				nw, ew := w.Write(buf[0:nr])
-				if fOk {
-					f.Flush()
-				}
-				if ew != nil {
-					return ew
-				}
-				if nr != nw {
-					return io.ErrShortWrite
-				}
+		nr, rErr := r.Read(buf[:])
+		if nr > 0 {
+			nw, wErr := w.Write(buf[0:nr])
+			if flushable {
+				f.Flush()
 			}
-			if er != nil {
-				if er == io.EOF {
-					return nil
-				}
-				return er
+			if wErr != nil {
+				return errors.Wrap(wErr)
 			}
+			if nr != nw {
+				return errors.Wrap(io.ErrShortWrite)
+			}
+		}
+		if rErr != nil {
+			if rErr == io.EOF {
+				return nil
+			}
+			return errors.Wrap(rErr)
 		}
 	}
 }
 
-type eofnotifier struct {
+type eofNotifier struct {
 	backend io.Reader
-	ch      chan struct{}
+	closeCh chan struct{}
 }
 
-func (en eofnotifier) Read(data []byte) (int, error) {
-	n, err := en.backend.Read(data)
+func newEOFNotifier(b io.Reader) *eofNotifier {
+	return &eofNotifier{
+		backend: b,
+		closeCh: make(chan struct{}),
+	}
+}
+
+func (e *eofNotifier) ch() <-chan struct{} {
+	return e.closeCh
+}
+
+func (e *eofNotifier) Read(data []byte) (int, error) {
+	n, err := e.backend.Read(data)
 	if err == io.EOF {
 		select {
-		case <-en.ch:
+		case <-e.closeCh:
 		default:
-			close(en.ch)
+			close(e.closeCh)
 		}
 	}
 	return n, err

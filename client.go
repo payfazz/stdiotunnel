@@ -7,53 +7,54 @@ import (
 	"os"
 	"strings"
 
+	"github.com/payfazz/go-errors"
+	"github.com/payfazz/go-errors/errhandler"
 	"github.com/payfazz/ioconn"
+	"github.com/payfazz/mainutil"
+	"github.com/payfazz/stdlog"
 	"golang.org/x/net/http2"
 )
 
 func runClient(addr string) {
-	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)
-	logger.Println("Starting client")
+	stdlog.E("Starting client\n")
 
 	netaddr := strings.SplitN(addr, ":", 2)
 	if len(netaddr) != 2 {
 		showUsage()
 	}
 
+	wrappedStdin := newEOFNotifier(os.Stdin)
+	stdinClosedCh := wrappedStdin.ch()
+
 	leftMuxed := ioconn.New(ioconn.Config{
-		Reader: os.Stdin,
+		Reader: wrappedStdin,
 		Writer: os.Stdout,
 	})
 
-	(&http2.Server{}).ServeConn(leftMuxed, &http2.ServeConnOpts{
+	server := &http2.Server{}
+
+	server.ServeConn(leftMuxed, &http2.ServeConnOpts{
 		BaseConfig: &http.Server{
-			ErrorLog: logger,
+			ErrorLog: log.New(stdlog.Err, "internal http2 error: ", 0),
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				leftWriter := w
 				leftReader := r.Body
 
 				right, err := net.Dial(netaddr[0], netaddr[1])
-				if err != nil {
-					logger.Println(err)
-					return
-				}
+				errhandler.Check(errors.Wrap(err))
 				defer right.Close()
 
-				allCh := make(chan struct{})
-				defer close(allCh)
+				halfDoneCh := make(chan struct{})
 
 				leftToRightCh := make(chan struct{})
 				go func() {
 					defer close(leftToRightCh)
-					if err := copyAll(copyAllParam{
-						terminateCh: allCh,
-						reader:      leftReader,
-						writer:      right,
-					}); err != nil {
+					if err := copyAll(leftReader, right); err != nil {
 						select {
-						case <-allCh:
+						case <-stdinClosedCh:
+						case <-halfDoneCh:
 						default:
-							logger.Println(err)
+							mainutil.Eprint(errors.Wrap(err))
 						}
 					}
 				}()
@@ -61,22 +62,21 @@ func runClient(addr string) {
 				rightToLeftCh := make(chan struct{})
 				go func() {
 					defer close(rightToLeftCh)
-					if err := copyAll(copyAllParam{
-						terminateCh: allCh,
-						reader:      right,
-						writer:      leftWriter,
-					}); err != nil {
+					if err := copyAll(right, leftWriter); err != nil {
 						select {
-						case <-allCh:
+						case <-stdinClosedCh:
+						case <-halfDoneCh:
 						default:
-							logger.Println(err)
+							mainutil.Eprint(errors.Wrap(err))
 						}
 					}
 				}()
 
 				select {
 				case <-leftToRightCh:
+					close(halfDoneCh)
 				case <-rightToLeftCh:
+					close(halfDoneCh)
 				}
 			}),
 		},

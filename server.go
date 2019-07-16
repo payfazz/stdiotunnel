@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -9,61 +9,57 @@ import (
 	"strings"
 	"time"
 
+	"github.com/payfazz/go-errors"
+	"github.com/payfazz/go-errors/errhandler"
 	"github.com/payfazz/ioconn"
+	"github.com/payfazz/mainutil"
+	"github.com/payfazz/stdlog"
 	"golang.org/x/net/http2"
 )
 
 func runServer(addr string) {
-	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)
-
 	netaddr := strings.SplitN(addr, ":", 2)
 	if len(netaddr) != 2 {
 		showUsage()
 	}
 
 	leftListener, err := net.Listen(netaddr[0], netaddr[1])
-	if err != nil {
-		logger.Fatalln(err)
-		return
-	}
+	errhandler.Check(errors.Wrap(err))
 
-	logger.Printf("Server listening on %v\n", leftListener.Addr())
+	stdlog.E(fmt.Sprintf("Server listening on %v\n", leftListener.Addr()))
 
-	allCh := make(chan struct{})
+	wrappedStdin := newEOFNotifier(os.Stdin)
+	stdinClosedCh := wrappedStdin.ch()
+
 	rightMuxed := ioconn.New(ioconn.Config{
-		Reader: eofnotifier{
-			backend: os.Stdin,
-			ch:      allCh,
-		},
+		Reader: wrappedStdin,
 		Writer: os.Stdout,
 	})
 
 	go func() {
-		<-allCh
+		<-stdinClosedCh
 		leftListener.Close()
 	}()
 
 	rightMuxedConn, err := (&http2.Transport{}).NewClientConn(rightMuxed)
-	if err != nil {
-		logger.Println(err)
-		return
-	}
+	errhandler.Check(errors.Wrap(err))
 
 mainloop:
 	for {
 		left, err := leftListener.Accept()
 		if err != nil {
 			select {
-			case <-allCh:
+			case <-stdinClosedCh:
 				break mainloop
 			default:
-				logger.Println(err)
+				mainutil.Eprint(errors.Wrap(err))
 				time.Sleep(1 * time.Second)
 				continue mainloop
 			}
 		}
 
 		go func() {
+			defer errhandler.With(mainutil.Eprint)
 			defer left.Close()
 
 			rightReq := &http.Request{
@@ -75,21 +71,14 @@ mainloop:
 				Body: left,
 			}
 			rightResp, err := rightMuxedConn.RoundTrip(rightReq)
-			if err != nil {
-				logger.Println(err)
-				return
-			}
+			errhandler.Check(errors.Wrap(err))
 			defer rightResp.Body.Close()
 
-			if err := copyAll(copyAllParam{
-				terminateCh: allCh,
-				reader:      rightResp.Body,
-				writer:      left,
-			}); err != nil {
+			if err := copyAll(rightResp.Body, left); err != nil {
 				select {
-				case <-allCh:
+				case <-stdinClosedCh:
 				default:
-					logger.Println(err)
+					mainutil.Eprint(errors.Wrap(err))
 				}
 			}
 		}()
