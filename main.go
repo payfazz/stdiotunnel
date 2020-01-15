@@ -26,7 +26,7 @@ func main() {
 }
 
 func showUsage() {
-	errhandler.Fail(errors.Errorf(
+	errhandler.Check(errors.Errorf(
 		"Usage:\n"+
 			"%s client <network:addr>\n"+
 			"%s server <network:addr>\n"+

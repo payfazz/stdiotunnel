@@ -26,7 +26,7 @@ func runServer(addr string) {
 	leftListener, err := net.Listen(netaddr[0], netaddr[1])
 	errhandler.Check(errors.Wrap(err))
 
-	stdlog.E(fmt.Sprintf("Server listening on %v\n", leftListener.Addr()))
+	stdlog.Err.Print(fmt.Sprintf("Server listening on %v\n", leftListener.Addr()))
 
 	wrappedStdin := newEOFNotifier(os.Stdin)
 	stdinClosedCh := wrappedStdin.ch()
@@ -52,14 +52,16 @@ mainloop:
 			case <-stdinClosedCh:
 				break mainloop
 			default:
-				mainutil.Eprint(errors.Wrap(err))
+				errors.PrintTo(mainutil.Err, errors.Wrap(err))
 				time.Sleep(1 * time.Second)
 				continue mainloop
 			}
 		}
 
 		go func() {
-			defer errhandler.With(mainutil.Eprint)
+			defer errhandler.With(func(err error) {
+				errors.PrintTo(mainutil.Err, errors.Wrap(err))
+			})
 			defer left.Close()
 
 			rightReq := &http.Request{
@@ -78,7 +80,7 @@ mainloop:
 				select {
 				case <-stdinClosedCh:
 				default:
-					mainutil.Eprint(errors.Wrap(err))
+					errors.PrintTo(mainutil.Err, errors.Wrap(err))
 				}
 			}
 		}()

@@ -16,7 +16,7 @@ import (
 )
 
 func runClient(addr string) {
-	stdlog.E("Starting client\n")
+	stdlog.Err.Print("Starting client\n")
 
 	netaddr := strings.SplitN(addr, ":", 2)
 	if len(netaddr) != 2 {
@@ -54,7 +54,7 @@ func runClient(addr string) {
 						case <-stdinClosedCh:
 						case <-halfDoneCh:
 						default:
-							mainutil.Eprint(errors.Wrap(err))
+							errors.PrintTo(mainutil.Err, errors.Wrap(err))
 						}
 					}
 				}()
@@ -67,7 +67,7 @@ func runClient(addr string) {
 						case <-stdinClosedCh:
 						case <-halfDoneCh:
 						default:
-							mainutil.Eprint(errors.Wrap(err))
+							errors.PrintTo(mainutil.Err, errors.Wrap(err))
 						}
 					}
 				}()
