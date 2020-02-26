@@ -12,24 +12,23 @@ import (
 	"github.com/payfazz/go-errors"
 	"github.com/payfazz/go-errors/errhandler"
 	"github.com/payfazz/ioconn"
-	"github.com/payfazz/mainutil"
 	"github.com/payfazz/stdlog"
 	"golang.org/x/net/http2"
 )
 
 func runServer(addr string) {
-	netaddr := strings.SplitN(addr, ":", 2)
-	if len(netaddr) != 2 {
+	leftAddr := strings.SplitN(addr, ":", 2)
+	if len(leftAddr) != 2 {
 		showUsage()
 	}
 
-	leftListener, err := net.Listen(netaddr[0], netaddr[1])
+	leftListener, err := net.Listen(leftAddr[0], leftAddr[1])
 	errhandler.Check(errors.Wrap(err))
 
 	stdlog.Err.Print(fmt.Sprintf("Server listening on %v\n", leftListener.Addr()))
 
 	wrappedStdin := newEOFNotifier(os.Stdin)
-	stdinClosedCh := wrappedStdin.ch()
+	stdinClosed := wrappedStdin.ch()
 
 	rightMuxed := ioconn.New(ioconn.Config{
 		Reader: wrappedStdin,
@@ -37,30 +36,31 @@ func runServer(addr string) {
 	})
 
 	go func() {
-		<-stdinClosedCh
+		<-stdinClosed
 		leftListener.Close()
 	}()
 
 	rightMuxedConn, err := (&http2.Transport{}).NewClientConn(rightMuxed)
 	errhandler.Check(errors.Wrap(err))
+	defer rightMuxedConn.Close()
 
 mainloop:
 	for {
 		left, err := leftListener.Accept()
 		if err != nil {
 			select {
-			case <-stdinClosedCh:
+			case <-stdinClosed:
 				break mainloop
 			default:
-				errors.PrintTo(mainutil.Err, errors.Wrap(err))
-				time.Sleep(1 * time.Second)
+				errors.PrintTo(stdlog.Err, errors.Wrap(err))
+				time.Sleep(100 * time.Millisecond)
 				continue mainloop
 			}
 		}
 
 		go func() {
 			defer errhandler.With(func(err error) {
-				errors.PrintTo(mainutil.Err, errors.Wrap(err))
+				errors.PrintTo(stdlog.Err, errors.Wrap(err))
 			})
 			defer left.Close()
 
@@ -68,7 +68,7 @@ mainloop:
 				Method: "POST",
 				URL: &url.URL{
 					Scheme: "http",
-					Path:   "/",
+					Host:   "stdiotunnel",
 				},
 				Body: left,
 			}
@@ -78,9 +78,9 @@ mainloop:
 
 			if err := copyAll(rightResp.Body, left); err != nil {
 				select {
-				case <-stdinClosedCh:
+				case <-stdinClosed:
 				default:
-					errors.PrintTo(mainutil.Err, errors.Wrap(err))
+					errors.PrintTo(stdlog.Err, errors.Wrap(err))
 				}
 			}
 		}()

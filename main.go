@@ -1,15 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
-	"github.com/payfazz/go-errors"
+	"github.com/payfazz/go-errors-ext/errhandlerext"
 	"github.com/payfazz/go-errors/errhandler"
-	"github.com/payfazz/mainutil"
+	"github.com/payfazz/stdlog"
 )
 
 func main() {
-	defer errhandler.With(mainutil.ErrorHandler)
+	defer errhandler.With(errhandlerext.LogAndExit)
 
 	if len(os.Args) != 3 {
 		showUsage()
@@ -26,7 +27,7 @@ func main() {
 }
 
 func showUsage() {
-	errhandler.Check(errors.Errorf(
+	stdlog.Err.Print(fmt.Sprintf(
 		"Usage:\n"+
 			"%s client <network:addr>\n"+
 			"%s server <network:addr>\n"+
@@ -38,4 +39,5 @@ func showUsage() {
 			"%s server tcp::8080\n",
 		os.Args[0], os.Args[0], os.Args[0], os.Args[0],
 	))
+	os.Exit(1)
 }
