@@ -40,7 +40,3 @@ open another terminal, and run server
 check if ssh agent works
 
     docker exec <ctrid> sh -c 'export SSH_AUTH_SOCK=/tmp/ssh-agent; exec ssh-add -L'
-
-## KNOWN BUG
-
-because this project using HTTP/2 protocol for multiplexing the connection, so it's limited to maximal stream available for single connection, see [this](https://httpwg.org/specs/rfc7540.html#StreamIdentifiers)

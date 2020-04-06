@@ -2,61 +2,82 @@ package main
 
 import (
 	"io"
-	"net/http"
+	"os"
 
 	"github.com/payfazz/go-errors"
+	"github.com/payfazz/stdlog"
 )
 
-func copyAll(r io.Reader, w io.Writer) error {
-	f, flushable := w.(http.Flusher)
-	buf := [1 << 20]byte{}
-	for {
-		nr, rErr := r.Read(buf[:])
-		if nr > 0 {
-			nw, wErr := w.Write(buf[0:nr])
-			if flushable {
-				f.Flush()
-			}
-			if wErr != nil {
-				return errors.Wrap(wErr)
-			}
-			if nr != nw {
-				return errors.Wrap(io.ErrShortWrite)
-			}
-		}
-		if rErr != nil {
-			if rErr == io.EOF {
-				return nil
-			}
-			return errors.Wrap(rErr)
-		}
+type stdioWrapper struct {
+	io.Writer
+	io.Reader
+	readerDoneCh chan struct{}
+}
+
+func newStdioWrapper() *stdioWrapper {
+	return &stdioWrapper{
+		Writer:       os.Stdout,
+		Reader:       os.Stdin,
+		readerDoneCh: make(chan struct{}),
 	}
 }
 
-type eofNotifier struct {
-	backend io.Reader
-	closeCh chan struct{}
-}
-
-func newEOFNotifier(b io.Reader) *eofNotifier {
-	return &eofNotifier{
-		backend: b,
-		closeCh: make(chan struct{}),
-	}
-}
-
-func (e *eofNotifier) ch() <-chan struct{} {
-	return e.closeCh
-}
-
-func (e *eofNotifier) Read(data []byte) (int, error) {
-	n, err := e.backend.Read(data)
+func (w *stdioWrapper) Read(data []byte) (int, error) {
+	n, err := w.Reader.Read(data)
 	if err == io.EOF {
 		select {
-		case <-e.closeCh:
+		case <-w.readerDoneCh:
 		default:
-			close(e.closeCh)
+			close(w.readerDoneCh)
 		}
 	}
 	return n, err
+}
+
+func (w *stdioWrapper) readerDone() bool {
+	select {
+	case <-w.readerDoneCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *stdioWrapper) Close() error { return nil }
+
+func biCopy(left, right io.ReadWriter, globalDone <-chan struct{}) {
+	done := make(chan struct{})
+	defer close(done)
+
+	leftToRightDone := make(chan struct{})
+	rightToLeftDone := make(chan struct{})
+
+	go func() {
+		defer close(leftToRightDone)
+		if _, err := io.Copy(left, right); err != nil {
+			select {
+			case <-globalDone:
+			case <-done:
+			default:
+				errors.PrintTo(stdlog.Err, errors.Wrap(err))
+			}
+		}
+	}()
+
+	go func() {
+		defer close(rightToLeftDone)
+		if _, err := io.Copy(right, left); err != nil {
+			select {
+			case <-globalDone:
+			case <-done:
+			default:
+				errors.PrintTo(stdlog.Err, errors.Wrap(err))
+			}
+		}
+	}()
+
+	select {
+	case <-leftToRightDone:
+	case <-rightToLeftDone:
+	}
 }

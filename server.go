@@ -3,17 +3,13 @@ package main
 import (
 	"fmt"
 	"net"
-	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/yamux"
 	"github.com/payfazz/go-errors"
 	"github.com/payfazz/go-errors/errhandler"
-	"github.com/payfazz/ioconn"
 	"github.com/payfazz/stdlog"
-	"golang.org/x/net/http2"
 )
 
 func runServer(addr string) {
@@ -27,62 +23,40 @@ func runServer(addr string) {
 
 	stdlog.Err.Print(fmt.Sprintf("Server listening on %v\n", leftListener.Addr()))
 
-	wrappedStdin := newEOFNotifier(os.Stdin)
-	stdinClosed := wrappedStdin.ch()
-
-	rightMuxed := ioconn.New(ioconn.Config{
-		Reader: wrappedStdin,
-		Writer: os.Stdout,
-	})
+	rightMuxedIO := newStdioWrapper()
 
 	go func() {
-		<-stdinClosed
+		<-rightMuxedIO.readerDoneCh
 		leftListener.Close()
 	}()
 
-	rightMuxedConn, err := (&http2.Transport{}).NewClientConn(rightMuxed)
-	errhandler.Check(errors.Wrap(err))
-	defer rightMuxedConn.Close()
+	rightMuxed, err := yamux.Client(rightMuxedIO, nil)
+	errhandler.Check(err)
+	defer rightMuxed.Close()
 
-mainloop:
 	for {
 		left, err := leftListener.Accept()
 		if err != nil {
-			select {
-			case <-stdinClosed:
-				break mainloop
-			default:
-				errors.PrintTo(stdlog.Err, errors.Wrap(err))
-				time.Sleep(100 * time.Millisecond)
-				continue mainloop
+			if rightMuxedIO.readerDone() {
+				break
 			}
+			errors.PrintTo(stdlog.Err, errors.Wrap(err))
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
 		go func() {
 			defer errhandler.With(func(err error) {
 				errors.PrintTo(stdlog.Err, errors.Wrap(err))
 			})
+
 			defer left.Close()
 
-			rightReq := &http.Request{
-				Method: "POST",
-				URL: &url.URL{
-					Scheme: "http",
-					Host:   "stdiotunnel",
-				},
-				Body: left,
-			}
-			rightResp, err := rightMuxedConn.RoundTrip(rightReq)
-			errhandler.Check(errors.Wrap(err))
-			defer rightResp.Body.Close()
+			right, err := rightMuxed.OpenStream()
+			errhandler.Check(err)
+			defer right.Close()
 
-			if err := copyAll(rightResp.Body, left); err != nil {
-				select {
-				case <-stdinClosed:
-				default:
-					errors.PrintTo(stdlog.Err, errors.Wrap(err))
-				}
-			}
+			biCopy(left, right, rightMuxedIO.readerDoneCh)
 		}()
 	}
 }

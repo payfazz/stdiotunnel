@@ -1,0 +1,11 @@
+FROM golang:1.14-alpine
+
+RUN mkdir /data/
+
+WORKDIR /data/
+
+COPY *.go /data/
+COPY go.mod go.sum /data/
+RUN CGO_ENABLED=0 go build .
+
+ENTRYPOINT ["/bin/tar", "c", "stdiotunnel"]
